@@ -239,7 +239,7 @@ pub fn exception(args: TokenStream, input: TokenStream) -> TokenStream {
                 && f.sig.inputs.len() == 1
                 && match &f.sig.inputs[0] {
                     FnArg::Typed(arg) => match arg.ty.as_ref() {
-                        Type::Reference(r) => r.lifetime.is_none() && r.mutability.is_none(),
+                        Type::Reference(r) => r.lifetime.is_none() && r.mutability.is_some(),
                         _ => false,
                     },
                     _ => false,
@@ -255,7 +255,7 @@ pub fn exception(args: TokenStream, input: TokenStream) -> TokenStream {
             if !valid_signature {
                 return parse::Error::new(
                     fspan,
-                    "`HardFault` handler must have signature `unsafe fn(&ExceptionFrame) -> !`",
+                    "`HardFault` handler must have signature `unsafe fn(&mut ExceptionFrame) -> !`",
                 )
                 .to_compile_error()
                 .into();
@@ -276,7 +276,7 @@ pub fn exception(args: TokenStream, input: TokenStream) -> TokenStream {
                 // because some hosted platforms (used to check the build)
                 // cannot handle the long link section names.
                 #[cfg_attr(target_os = "none", link_section = ".HardFault.user")]
-                pub unsafe extern "C" fn #tramp_ident(frame: &::cortex_m_rt::ExceptionFrame) {
+                pub unsafe extern "C" fn #tramp_ident(frame: &mut ::cortex_m_rt::ExceptionFrame) {
                     #ident(frame)
                 }
 
