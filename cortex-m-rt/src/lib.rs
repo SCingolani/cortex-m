@@ -468,8 +468,9 @@ global_asm!(
      .cfi_startproc
      HardFaultTrampoline:",
     "mov r0, lr
-     movs r1, #4
-     tst r0, r1
+     mov r1, sp
+     movs r2, #4
+     tst r0, r2
      bne 0f
      mrs r0, MSP
      b HardFault
