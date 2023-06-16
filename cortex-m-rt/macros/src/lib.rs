@@ -121,17 +121,6 @@ enum Exception {
     Other,
 }
 
-impl Display for Exception {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Exception::DefaultHandler => write!(f, "`DefaultHandler`"),
-            Exception::HardFault(_) => write!(f, "`HardFault` handler"),
-            Exception::NonMaskableInt => write!(f, "`NonMaskableInt` handler"),
-            Exception::Other => write!(f, "Other exception handler"),
-        }
-    }
-}
-
 #[derive(Debug, PartialEq)]
 struct HardFaultArgs {
     trampoline: bool,
@@ -233,6 +222,12 @@ pub fn exception(args: TokenStream, input: TokenStream) -> TokenStream {
             Exception::Other
         }
         _ => {
+            if !args.is_empty() {
+                return parse::Error::new(Span::call_site(), "This attribute accepts no arguments")
+                    .to_compile_error()
+                    .into();
+            }
+
             return parse::Error::new(ident.span(), "This is not a valid exception name")
                 .to_compile_error()
                 .into();
@@ -316,21 +311,22 @@ pub fn exception(args: TokenStream, input: TokenStream) -> TokenStream {
                 #f
             )
         }
-        Exception::HardFault if cfg!(feature = "hardfault-trampoline") => {
+        Exception::HardFault(args) => {
             let valid_signature = f.sig.constness.is_none()
                 && f.vis == Visibility::Inherited
                 && f.sig.abi.is_none()
                 && if args.trampoline {
-                    f.sig.inputs.len() == 1
-                        && match &f.sig.inputs[0] {
-                            FnArg::Typed(arg) => match arg.ty.as_ref() {
-                                Type::Reference(r) => {
-                                    r.lifetime.is_none() && r.mutability.is_none()
-                                }
-                                _ => false,
-                            },
+                    match &f.sig.inputs[0] {
+                        FnArg::Typed(arg) => match arg.ty.as_ref() {
+                            Type::Reference(r) => {
+                                r.lifetime.is_none()
+                                    && r.mutability.is_none()
+                                    && f.sig.inputs.len() == 1
+                            }
                             _ => false,
-                        }
+                        },
+                        _ => false,
+                    }
                 } else {
                     f.sig.inputs.is_empty()
                 }
@@ -356,9 +352,10 @@ pub fn exception(args: TokenStream, input: TokenStream) -> TokenStream {
             }
 
             f.sig.ident = Ident::new(&format!("__cortex_m_rt_{}", f.sig.ident), Span::call_site());
-            let tramp_ident = Ident::new(&format!("{}_trampoline", f.sig.ident), Span::call_site());
 
             if args.trampoline {
+                let tramp_ident =
+                    Ident::new(&format!("{}_trampoline", f.sig.ident), Span::call_site());
                 let ident = &f.sig.ident;
 
                 let (ref cfgs, ref attrs) = extract_cfgs(f.attrs.clone());
@@ -367,8 +364,12 @@ pub fn exception(args: TokenStream, input: TokenStream) -> TokenStream {
                     #(#cfgs)*
                     #(#attrs)*
                     #[doc(hidden)]
-                    #[export_name = "_HardFault"]
-                    unsafe extern "C" fn #tramp_ident(frame: &::cortex_m_rt::ExceptionFrame) {
+                    #[export_name = "HardFault"]
+                    // Only emit link_section when building for embedded targets,
+                    // because some hosted platforms (used to check the build)
+                    // cannot handle the long link section names.
+                    #[cfg_attr(target_os = "none", link_section = ".HardFault.user")]
+                    pub unsafe extern "C" fn #tramp_ident(frame: &::cortex_m_rt::ExceptionFrame) {
                         #ident(frame)
                     }
 
@@ -379,33 +380,27 @@ pub fn exception(args: TokenStream, input: TokenStream) -> TokenStream {
                     // Depending on the stack mode in EXC_RETURN, fetches stack from either MSP or PSP.
                     core::arch::global_asm!(
                         ".cfi_sections .debug_frame
-                        .section .HardFault.user, \"ax\"
-                        .global HardFault
-                        .type HardFault,%function
+                        .section .HardFaultTrampoline, \"ax\"
+                        .global HardFaultTrampline
+                        .type HardFaultTrampline,%function
                         .thumb_func
                         .cfi_startproc
-                        HardFault:",
-                           "mov r0, lr
-                            movs r1, #4
-                            tst r0, r1
-                            bne 0f
-                            mrs r0, MSP
-                            b _HardFault
+                        HardFaultTrampoline:",
+                                        "mov r0, lr
+                        movs r1, #4
+                        tst r0, r1
+                        bne 0f
+                        mrs r0, MSP
+                        b HardFault
                         0:
-                            mrs r0, PSP
-                            b _HardFault",
+                        mrs r0, PSP
+                        b HardFault",
                         ".cfi_endproc
-                        .size HardFault, . - HardFault",
+                        .size HardFaultTrampoline, . - HardFaultTrampoline",
                     );
                 )
             } else {
                 quote!(
-                    #[doc(hidden)]
-                    #[export_name = "_HardFault"]
-                    unsafe extern "C" fn #tramp_ident() {
-                        // This trampoline has no function except making the compiler diagnostics better.
-                    }
-
                     #[export_name = "HardFault"]
                     // Only emit link_section when building for embedded targets,
                     // because some hosted platforms (used to check the build)
@@ -414,39 +409,6 @@ pub fn exception(args: TokenStream, input: TokenStream) -> TokenStream {
                     #f
                 )
             }
-        }
-        Exception::HardFault => {
-            let valid_signature = f.sig.constness.is_none()
-                && f.vis == Visibility::Inherited
-                && f.sig.abi.is_none()
-                && f.sig.inputs.is_empty()
-                && f.sig.generics.params.is_empty()
-                && f.sig.generics.where_clause.is_none()
-                && f.sig.variadic.is_none()
-                && match f.sig.output {
-                    ReturnType::Default => false,
-                    ReturnType::Type(_, ref ty) => matches!(**ty, Type::Never(_)),
-                };
-
-            if !valid_signature {
-                return parse::Error::new(
-                    fspan,
-                    "`HardFault` handler must have signature `unsafe fn() -> !`",
-                )
-                .to_compile_error()
-                .into();
-            }
-
-            f.sig.ident = Ident::new(&format!("__cortex_m_rt_{}", f.sig.ident), Span::call_site());
-
-            quote!(
-                #[export_name = "HardFault"]
-                // Only emit link_section when building for embedded targets,
-                // because some hosted platforms (used to check the build)
-                // cannot handle the long link section names.
-                #[cfg_attr(target_os = "none", link_section = ".HardFault.user")]
-                #f
-            )
         }
         Exception::NonMaskableInt | Exception::Other => {
             let valid_signature = f.sig.constness.is_none()
