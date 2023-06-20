@@ -121,6 +121,17 @@ enum Exception {
     Other,
 }
 
+impl Display for Exception {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Exception::DefaultHandler => write!(f, "`DefaultHandler`"),
+            Exception::HardFault(_) => write!(f, "`HardFault` handler"),
+            Exception::NonMaskableInt => write!(f, "`NonMaskableInt` handler"),
+            Exception::Other => write!(f, "Other exception handler"),
+        }
+    }
+}
+
 #[derive(Debug, PartialEq)]
 struct HardFaultArgs {
     trampoline: bool,
@@ -222,12 +233,6 @@ pub fn exception(args: TokenStream, input: TokenStream) -> TokenStream {
             Exception::Other
         }
         _ => {
-            if !args.is_empty() {
-                return parse::Error::new(Span::call_site(), "This attribute accepts no arguments")
-                    .to_compile_error()
-                    .into();
-            }
-
             return parse::Error::new(ident.span(), "This is not a valid exception name")
                 .to_compile_error()
                 .into();
@@ -316,17 +321,16 @@ pub fn exception(args: TokenStream, input: TokenStream) -> TokenStream {
                 && f.vis == Visibility::Inherited
                 && f.sig.abi.is_none()
                 && if args.trampoline {
-                    match &f.sig.inputs[0] {
-                        FnArg::Typed(arg) => match arg.ty.as_ref() {
-                            Type::Reference(r) => {
-                                r.lifetime.is_none()
-                                    && r.mutability.is_none()
-                                    && f.sig.inputs.len() == 1
-                            }
+                    f.sig.inputs.len() == 1
+                        && match &f.sig.inputs[0] {
+                            FnArg::Typed(arg) => match arg.ty.as_ref() {
+                                Type::Reference(r) => {
+                                    r.lifetime.is_none() && r.mutability.is_none()
+                                }
+                                _ => false,
+                            },
                             _ => false,
-                        },
-                        _ => false,
-                    }
+                        }
                 } else {
                     f.sig.inputs.is_empty()
                 }
